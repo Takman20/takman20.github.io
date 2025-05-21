@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>Art Gallery - Custom Paintings</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
@@ -10,7 +10,7 @@
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/geometries/TextGeometry.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/FontLoader.js"></script>
     <style>
-        body { margin: 0; overflow: hidden; font-family: 'Inter', sans-serif; cursor: grab; }
+        body { margin: 0; overflow: hidden; font-family: 'Inter', sans-serif; cursor: grab; -webkit-user-select: none; -ms-user-select: none; user-select: none; }
         #canvasContainer { width: 100vw; height: 100vh; display: block; }
         #instructions {
             position: absolute;
@@ -44,21 +44,89 @@
             padding: 5px 10px;
             border-radius: 4px;
             font-size: 12px;
-            pointer-events: none; /* So it doesn't interfere with mouse clicks on canvas */
-            display: none; /* Hidden by default */
-            transform: translate(-50%, -150%); /* Adjusted vertical offset for more space above */
+            pointer-events: none; 
+            display: none; 
+            transform: translate(-50%, -150%); 
             white-space: nowrap;
             z-index: 100;
         }
+        #device-select-modal {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background-color: rgba(0,0,0,0.8);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 200;
+            color: white;
+            text-align: center;
+        }
+        #device-select-modal h2 { font-size: 1.8em; margin-bottom: 20px; }
+        #device-select-modal button {
+            background-color: #4A5568; /* Tailwind gray-700 */
+            color: white;
+            padding: 12px 24px;
+            margin: 10px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1.1em;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        #device-select-modal button:hover { background-color: #2D3748; /* Tailwind gray-800 */ }
+        
+        #mobile-controls { 
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            display: none; 
+            z-index: 150;
+            opacity: 0.7;
+        }
+         .mobile-btn {
+            background-color: rgba(80, 80, 80, 0.7);
+            color: white;
+            border: 2px solid rgba(200, 200, 200, 0.8);
+            border-radius: 50%;
+            width: 60px;
+            height: 60px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-size: 24px;
+            margin: 5px;
+            user-select: none; 
+            -webkit-user-select: none;
+            touch-action: manipulation; 
+        }
+        #dpad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; width: 190px; }
+        #dpad .spacer { visibility: hidden; }
+
     </style>
 </head>
 <body>
+    <div id="device-select-modal">
+        <h2>Select Your Device Type</h2>
+        <div>
+            <button id="desktop-btn">Desktop</button>
+            <button id="mobile-btn">Mobile</button>
+        </div>
+    </div>
+
     <div id="canvasContainer"></div>
     <div id="instructions">
-        Click to look around. WASD to move. SHIFT to run. SPACE to jump. H to toggle walls. F to toggle frames. G to toggle collisions. ESC to release mouse.
-    </div>
+        </div>
     <div id="loader">Loading Assets...</div>
     <div id="painting-tooltip"></div>
+
+    <div id="mobile-controls">
+        <div id="dpad">
+            <div class="spacer"></div> <button class="mobile-btn" id="btn-forward">▲</button> <div class="spacer"></div>
+            <button class="mobile-btn" id="btn-left">◀</button> <div class="spacer"></div> <button class="mobile-btn" id="btn-right">▶</button>
+            <div class="spacer"></div> <button class="mobile-btn" id="btn-backward">▼</button> <div class="spacer"></div>
+        </div>
+    </div>
 
     <script>
         // --- Three.js Scene Setup ---
@@ -75,6 +143,16 @@
         let artworkRaycaster, paintingTooltip;
         let intersectablePaintingCanvases = []; 
         let artworkNameCounter = 1;
+        let deviceType = null; 
+
+        // Mobile input state object
+        const mobileInputState = {
+            lookTouchId: null,
+            lookTouchStartX: 0,
+            lookTouchStartY: 0,
+            looking: false,
+        };
+        const mobileLookSensitivity = 1.75; 
 
 
         const moveSpeed = 0.1; 
@@ -90,10 +168,9 @@
         const doorwayHeight = 3;
         const wallThickness = 0.2; 
         
-        // Door frame dimensions
-        const doorFramePlankVisibleWidth = 0.1; // How "thick" the wood of the frame appears from the front
-        const doorFramePlankDepth = wallThickness + 0.02; // How deep the frame is, slightly proud of the wall
-        const doorFrameInset = 0.01; // Small gap between wall opening and frame to prevent Z-fighting
+        const doorFramePlankVisibleWidth = 0.1; 
+        const doorFramePlankDepth = wallThickness + 0.02; 
+        const doorFrameInset = 0.01; 
 
 
         const playerHeight = galleryHeight / 2.5; 
@@ -105,7 +182,7 @@
 
         const keysPressed = { 
             'w': false, 'a': false, 's': false, 'd': false, 
-            'shift': false, ' ': false 
+            'shift': false, ' ': false
         };
         let isPointerLocked = false;
         let collidableBoxes = [];
@@ -136,6 +213,24 @@
             { url: "https://media.discordapp.net/attachments/1049072088465555549/1374528647704219700/IMG_3113.png?ex=682e610f&is=682d0f8f&hm=7301e4f86667e092da3e068e9942f01e81981e97e032463eaa30916bbf3f8627&=&format=webp&quality=lossless&width=809&height=800", wall: 'right', xOffsetPercent: 0, zOffsetPercent: 0.35, isPlaceholder: false, name: "NewRoomRight2", displayName: "Blue", initialRotY: -Math.PI / 2 }  
         ];
 
+        function startExperience(selectedDeviceType) {
+            deviceType = selectedDeviceType;
+            document.getElementById('device-select-modal').style.display = 'none'; 
+            
+            const instructionsElement = document.getElementById('instructions');
+            if (deviceType === 'mobile') {
+                document.getElementById('mobile-controls').style.display = 'block';
+                instructionsElement.textContent = "Use D-pad to move. Swipe screen to look.";
+            } else {
+                instructionsElement.textContent = "Click to look around. WASD to move. SHIFT to run. SPACE to jump. ESC to release mouse.";
+            }
+            init(); 
+        }
+
+        document.getElementById('desktop-btn').addEventListener('click', () => startExperience('desktop'));
+        document.getElementById('mobile-btn').addEventListener('click', () => startExperience('mobile'));
+
+
         // Function definitions moved before init() call
         function onWindowResize() {
             if (!camera || !renderer) return;
@@ -146,33 +241,50 @@
 
         function updateCameraMovement() {
             if (!yawObject) return; 
-            velocityY += gravity;
-            let potentialY = yawObject.position.y + velocityY;
-            if (potentialY <= playerHeight) { potentialY = playerHeight; velocityY = 0; onGround = true; } 
-            else { onGround = false; }
-            yawObject.position.y = potentialY;
-            let currentEffectiveSpeed = keysPressed.shift ? moveSpeed * runSpeedMultiplier : moveSpeed; 
-            const originalXZPosition = new THREE.Vector3(yawObject.position.x, playerHeight, yawObject.position.z);
+            
+            if (deviceType === 'desktop') { 
+                velocityY += gravity;
+                let potentialY = yawObject.position.y + velocityY;
+                if (potentialY <= playerHeight) { potentialY = playerHeight; velocityY = 0; onGround = true; } 
+                else { onGround = false; }
+                yawObject.position.y = potentialY;
+            }
+
+            let currentEffectiveSpeed = keysPressed.shift && deviceType === 'desktop' ? moveSpeed * runSpeedMultiplier : moveSpeed; 
+            const originalPos = yawObject.position.clone(); 
+            if (deviceType === 'desktop') originalPos.y = playerHeight;
+
+
             const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(yawObject.quaternion);
             const right = new THREE.Vector3(1, 0, 0).applyQuaternion(yawObject.quaternion);
             const intendedDisplacement = new THREE.Vector3();
+
             if (keysPressed.w) intendedDisplacement.add(forward);
             if (keysPressed.s) intendedDisplacement.sub(forward);
             if (keysPressed.a) intendedDisplacement.sub(right);
             if (keysPressed.d) intendedDisplacement.add(right);
+            
             if (intendedDisplacement.lengthSq() > 0) intendedDisplacement.normalize().multiplyScalar(currentEffectiveSpeed);
-            else return; 
-            const targetXZPosition = originalXZPosition.clone().add(intendedDisplacement);
-            const collisionCheckPosition = new THREE.Vector3(targetXZPosition.x, yawObject.position.y, targetXZPosition.z);
+            else return;
+
+
+            const targetPos = originalPos.clone().add(intendedDisplacement);
+            const collisionCheckPosition = new THREE.Vector3(targetPos.x, yawObject.position.y, targetPos.z);
+
+
             if (!checkCollision(collisionCheckPosition)) { 
-                yawObject.position.x = targetXZPosition.x;
-                yawObject.position.z = targetXZPosition.z;
+                yawObject.position.x = targetPos.x;
+                yawObject.position.z = targetPos.z;
             } else {
                 const currentX = yawObject.position.x; const currentZ = yawObject.position.z;
-                const targetPositionX = new THREE.Vector3(currentX + intendedDisplacement.x, yawObject.position.y, currentZ);
-                if (!checkCollision(targetPositionX)) yawObject.position.x = targetPositionX.x;
-                const targetPositionZ = new THREE.Vector3(yawObject.position.x, yawObject.position.y, currentZ + intendedDisplacement.z);
-                if (!checkCollision(targetPositionZ)) yawObject.position.z = targetPositionZ.z;
+                const targetPositionX = new THREE.Vector3(originalPos.x + intendedDisplacement.x, yawObject.position.y, originalPos.z);
+                if (!checkCollision(targetPositionX)) {
+                    yawObject.position.x = targetPositionX.x;
+                }
+                const targetPositionZ = new THREE.Vector3(yawObject.position.x, yawObject.position.y, originalPos.z + intendedDisplacement.z);
+                 if (!checkCollision(targetPositionZ)) {
+                    yawObject.position.z = targetPositionZ.z;
+                }
             }
         }
         
@@ -236,7 +348,7 @@
             loaderElement.textContent = 'Loading Assets...';
 
             let actualTexturesToLoadCount = mainGalleryArtworks.length + newRoomArtworksInfo.filter(art => !art.isPlaceholder).length;
-            let assetsToLoad = actualTexturesToLoadCount + 1 + 1; // Artworks + floor texture + Font 
+            let assetsToLoad = actualTexturesToLoadCount + 1 + 1; 
             let assetsLoaded = 0;
 
             loadingManager = new THREE.LoadingManager();
@@ -360,26 +472,25 @@
             }
              // --- Door Frame ---
             const doorFrameMaterial = new THREE.MeshStandardMaterial({ color: 0x5C3A21, roughness: 0.7, metalness: 0.1, name: "DoorFrameMaterial" }); 
-            const frameInset = 0.01; // Small inset to avoid z-fighting
+            const doorFrameSideHeight = doorwayHeight - (2 * doorFrameInset); 
 
-            const doorFrameSideHeight = doorwayHeight - (2 * frameInset);
             const doorFrameSideGeo = new THREE.BoxGeometry(doorFramePlankVisibleWidth, doorFrameSideHeight, doorFramePlankDepth); 
             
-            const doorFrameTopWidth = doorwayWidth - (2 * frameInset) - (2 * doorFramePlankVisibleWidth);
+            const doorFrameTopWidth = doorwayWidth - (2 * doorFrameInset) - (2 * doorFramePlankVisibleWidth);
             const doorFrameTopGeo = new THREE.BoxGeometry(doorFrameTopWidth, doorFramePlankVisibleWidth, doorFramePlankDepth); 
 
             const doorFrameLeft = new THREE.Mesh(doorFrameSideGeo, doorFrameMaterial);
-            doorFrameLeft.position.set(frontWallDoorwayXPosition - doorwayWidth / 2 + frameInset + doorFramePlankVisibleWidth / 2, doorFrameSideHeight / 2, galleryDepth / 2);
+            doorFrameLeft.position.set(frontWallDoorwayXPosition - doorwayWidth / 2 + doorFrameInset + doorFramePlankVisibleWidth / 2, doorFrameSideHeight / 2, galleryDepth / 2);
             doorFrameLeft.name = "DoorFrameLeft";
             scene.add(doorFrameLeft); allWallMeshes.push(doorFrameLeft);
 
             const doorFrameRight = new THREE.Mesh(doorFrameSideGeo, doorFrameMaterial);
-            doorFrameRight.position.set(frontWallDoorwayXPosition + doorwayWidth / 2 - frameInset - doorFramePlankVisibleWidth / 2, doorFrameSideHeight / 2, galleryDepth / 2);
+            doorFrameRight.position.set(frontWallDoorwayXPosition + doorwayWidth / 2 - doorFrameInset - doorFramePlankVisibleWidth / 2, doorFrameSideHeight / 2, galleryDepth / 2);
             doorFrameRight.name = "DoorFrameRight";
             scene.add(doorFrameRight); allWallMeshes.push(doorFrameRight);
 
             const doorFrameTop = new THREE.Mesh(doorFrameTopGeo, doorFrameMaterial);
-            doorFrameTop.position.set(frontWallDoorwayXPosition, doorwayHeight - frameInset - doorFramePlankVisibleWidth / 2, galleryDepth / 2);
+            doorFrameTop.position.set(frontWallDoorwayXPosition, doorwayHeight - doorFrameInset - doorFramePlankVisibleWidth / 2, galleryDepth / 2);
             doorFrameTop.name = "DoorFrameTop";
             scene.add(doorFrameTop); allWallMeshes.push(doorFrameTop);
 
@@ -811,52 +922,116 @@
             document.addEventListener('keydown', (event) => {
                 const key = event.key.toLowerCase();
                 if (keysPressed.hasOwnProperty(key)) keysPressed[key] = true;
-                if (key === ' ' && onGround) { velocityY = jumpStrength; onGround = false;}
-                if (key === 'h') {
-                    allWallMeshes.forEach(wall => {
-                        if (wall) wall.visible = !wall.visible;
-                    });
-                     console.log("Wall visibility toggled. NewRoomFarWall visible:", newRoomFarWallMesh ? newRoomFarWallMesh.visible : "N/A");
+                if (key === ' ' && onGround && deviceType === 'desktop') { 
+                    velocityY = jumpStrength; onGround = false;
                 }
-                if (key === 'f') { 
-                    allArtworkGroups.forEach(group => {
-                        if (group) group.visible = !group.visible;
-                    });
-                    console.log("Artwork frames visibility toggled.");
-                }
-                if (key === 'g') { 
-                    collisionsEnabled = !collisionsEnabled;
-                    console.log("Collisions Enabled:", collisionsEnabled);
-                }
+                // Toggles removed
             });
             document.addEventListener('keyup', (event) => {
                 const key = event.key.toLowerCase();
                 if (keysPressed.hasOwnProperty(key)) keysPressed[key] = false;
-                if (event.key === "Escape") document.exitPointerLock();
-            });
-            const canvas = renderer.domElement;
-            canvas.addEventListener('click', () => { if (!isPointerLocked) canvas.requestPointerLock(); });
-            document.addEventListener('pointerlockchange', () => {
-                isPointerLocked = document.pointerLockElement === canvas;
-                document.getElementById('instructions').style.display = isPointerLocked ? 'none' : 'block';
-                document.body.style.cursor = isPointerLocked ? 'none' : 'grab';
-            }, false);
-            document.addEventListener('mousemove', (event) => {
-                if (isPointerLocked) {
-                    let deltaX = event.movementX || 0; 
-                    let deltaY = event.movementY || 0; 
-                    const maxDelta = 100; 
-                    deltaX = Math.max(-maxDelta, Math.min(maxDelta, deltaX));
-                    deltaY = Math.max(-maxDelta, Math.min(maxDelta, deltaY));
-
-                    yawObject.rotation.y -= deltaX * lookSpeed;
-                    pitchObject.rotation.x -= deltaY * lookSpeed;
-                    pitchObject.rotation.x = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitchObject.rotation.x));
+                if (event.key === "Escape" && deviceType === 'desktop') { 
+                    document.exitPointerLock();
                 }
-            }, false);
+            });
+
+            if (deviceType === 'desktop') {
+                const canvas = renderer.domElement;
+                canvas.addEventListener('click', () => { if (!isPointerLocked) canvas.requestPointerLock(); });
+                document.addEventListener('pointerlockchange', () => {
+                    isPointerLocked = document.pointerLockElement === canvas;
+                    document.getElementById('instructions').style.display = isPointerLocked ? 'none' : 'block';
+                    document.body.style.cursor = isPointerLocked ? 'none' : 'grab';
+                }, false);
+                document.addEventListener('mousemove', (event) => {
+                    if (isPointerLocked) {
+                        let deltaX = event.movementX || 0; 
+                        let deltaY = event.movementY || 0; 
+                        const maxDelta = 100; 
+                        deltaX = Math.max(-maxDelta, Math.min(maxDelta, deltaX));
+                        deltaY = Math.max(-maxDelta, Math.min(maxDelta, deltaY));
+
+                        yawObject.rotation.y -= deltaX * lookSpeed;
+                        pitchObject.rotation.x -= deltaY * lookSpeed;
+                        pitchObject.rotation.x = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitchObject.rotation.x));
+                    }
+                }, false);
+            } else if (deviceType === 'mobile') {
+                const canvas = renderer.domElement; 
+                canvas.addEventListener('touchstart', (event) => {
+                    event.preventDefault(); 
+                    for (let i = 0; i < event.changedTouches.length; i++) {
+                        const touch = event.changedTouches[i];
+                        const touchX = touch.clientX;
+                        const touchY = touch.clientY;
+
+                        // Check if touch is on D-pad buttons
+                        let dPadButtonTouched = false;
+                        if (document.getElementById('btn-forward').contains(event.target)) { keysPressed.w = true; dPadButtonTouched = true; }
+                        else if (document.getElementById('btn-backward').contains(event.target)) { keysPressed.s = true; dPadButtonTouched = true; }
+                        else if (document.getElementById('btn-left').contains(event.target)) { keysPressed.a = true; dPadButtonTouched = true; }
+                        else if (document.getElementById('btn-right').contains(event.target)) { keysPressed.d = true; dPadButtonTouched = true; }
+                        
+                        if (!dPadButtonTouched && mobileInputState.lookTouchId === null) { 
+                            mobileInputState.looking = true;
+                            mobileInputState.lookTouchId = touch.identifier;
+                            mobileInputState.lookTouchStartX = touch.pageX;
+                            mobileInputState.lookTouchStartY = touch.pageY;
+                        }
+                    }
+                }, { passive: false });
+
+                canvas.addEventListener('touchmove', (event) => {
+                    event.preventDefault(); 
+                    for (let i = 0; i < event.changedTouches.length; i++) {
+                        const touch = event.changedTouches[i];
+                        if (touch.identifier === mobileInputState.lookTouchId) {
+                            const deltaX = touch.pageX - mobileInputState.lookTouchStartX;
+                            const deltaY = touch.pageY - mobileInputState.lookTouchStartY;
+                            yawObject.rotation.y -= deltaX * lookSpeed * mobileLookSensitivity;
+                            pitchObject.rotation.x -= deltaY * lookSpeed * mobileLookSensitivity;
+                            pitchObject.rotation.x = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitchObject.rotation.x));
+                            mobileInputState.lookTouchStartX = touch.pageX;
+                            mobileInputState.lookTouchStartY = touch.pageY;
+                        }
+                    }
+                }, { passive: false });
+
+                const dPadButtons = ['btn-forward', 'btn-left', 'btn-right', 'btn-backward'];
+                const dPadKeys = ['w', 'a', 'd', 's'];
+
+                dPadButtons.forEach((btnId, index) => {
+                    const button = document.getElementById(btnId);
+                    if(button){
+                        button.addEventListener('touchstart', (e) => { e.preventDefault(); keysPressed[dPadKeys[index]] = true; }, {passive: false});
+                        button.addEventListener('touchend', (e) => { e.preventDefault(); keysPressed[dPadKeys[index]] = false; }, {passive: false});
+                        button.addEventListener('touchcancel', (e) => { e.preventDefault(); keysPressed[dPadKeys[index]] = false; }, {passive: false});
+                    }
+                });
+
+
+                canvas.addEventListener('touchend', (event) => {
+                    for (let i = 0; i < event.changedTouches.length; i++) {
+                        const touch = event.changedTouches[i];
+                        if (touch.identifier === mobileInputState.lookTouchId) {
+                            mobileInputState.looking = false;
+                            mobileInputState.lookTouchId = null;
+                        }
+                    }
+                });
+                 canvas.addEventListener('touchcancel', (event) => { 
+                    for (let i = 0; i < event.changedTouches.length; i++) {
+                        const touch = event.changedTouches[i];
+                         if (touch.identifier === mobileInputState.lookTouchId) {
+                            mobileInputState.looking = false;
+                            mobileInputState.lookTouchId = null;
+                        }
+                    }
+                });
+            }
         }
         
-        init(); // Call init at the end
+        // init is called after device selection
     </script>
 </body>
 </html>
