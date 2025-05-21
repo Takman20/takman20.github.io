@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Art Gallery - Custom Paintings</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/geometries/TextGeometry.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/FontLoader.js"></script>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Inter', sans-serif; cursor: grab; }
+        #canvasContainer { width: 100vw; height: 100vh; display: block; }
+        #instructions {
+            position: absolute;
+            top: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: white;
+            background-color: rgba(0,0,0,0.7);
+            padding: 10px 20px;
+            border-radius: 5px;
+            font-size: 14px;
+            text-align: center;
+            z-index: 10;
+        }
+        #loader {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 1.2em;
+            padding: 15px;
+            background-color: rgba(0,0,0,0.6);
+            border-radius: 8px;
+            display: none; 
+        }
+        #painting-tooltip {
+            position: absolute;
+            background-color: rgba(0, 0, 0, 0.75);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            pointer-events: none; /* So it doesn't interfere with mouse clicks on canvas */
+            display: none; /* Hidden by default */
+            transform: translate(-50%, -150%); /* Adjusted vertical offset for more space above */
+            white-space: nowrap;
+            z-index: 100;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvasContainer"></div>
+    <div id="instructions">
+        Click to look around. WASD to move. SHIFT to run. SPACE to jump. H to toggle walls. F to toggle frames. G to toggle collisions. ESC to release mouse.
+    </div>
+    <div id="loader">Loading Assets...</div>
+    <div id="painting-tooltip"></div>
+
+    <script>
+        // --- Three.js Scene Setup ---
+        let scene, camera, renderer;
+        let centralPedestal; 
+        let yawObject, pitchObject; 
+        let textureLoader, gltfLoader, fontLoader; 
+        let loadingManager; 
+        
+        let allWallMeshes = []; 
+        let allArtworkGroups = []; 
+        let newRoomFarWallMesh, newRoomSideWall1Mesh, newRoomSideWall2Mesh; 
+        let collisionsEnabled = true; 
+        let artworkRaycaster, paintingTooltip;
+        let intersectablePaintingCanvases = []; 
+        let artworkNameCounter = 1;
+
+
+        const moveSpeed = 0.1; 
+        const runSpeedMultiplier = 2;
+        const lookSpeed = 0.002; 
+
+        const galleryWidth = 20;
+        const galleryHeight = 5; 
+        const galleryDepth = 30;
+        const newRoomWidth = 10; 
+        const newRoomDepth = 15; 
+        const doorwayWidth = 2;
+        const doorwayHeight = 3;
+        const wallThickness = 0.2; 
+        
+        // Door frame dimensions
+        const doorFramePlankVisibleWidth = 0.1; // How "thick" the wood of the frame appears from the front
+        const doorFramePlankDepth = wallThickness + 0.02; // How deep the frame is, slightly proud of the wall
+        const doorFrameInset = 0.01; // Small gap between wall opening and frame to prevent Z-fighting
+
+
+        const playerHeight = galleryHeight / 2.5; 
+        const playerRadius = 0.3; 
+        let onGround = true;
+        let velocityY = 0;
+        const gravity = -0.02; 
+        const jumpStrength = 0.35; 
+
+        const keysPressed = { 
+            'w': false, 'a': false, 's': false, 'd': false, 
+            'shift': false, ' ': false 
+        };
+        let isPointerLocked = false;
+        let collidableBoxes = [];
+
+        const paintingEnlargementFactor = 1.35; 
+        const baseTargetArtworkHeight = 1.8;
+        const enlargedTargetArtworkHeight = baseTargetArtworkHeight * paintingEnlargementFactor;
+
+
+        // Artwork URLs from Wikimedia Commons (Main Gallery)
+        const mainGalleryArtworks = [
+            {url: "https://upload.wikimedia.org/wikipedia/commons/thumb/e/ec/Mona_Lisa%2C_by_Leonardo_da_Vinci%2C_from_C2RMF_retouched.jpg/800px-Mona_Lisa%2C_by_Leonardo_da_Vinci%2C_from_C2RMF_retouched.jpg", x: -galleryWidth / 2.8, z: -galleryDepth / 2, rotY: 0, wallName: "back", displayName: "Mona Lisa"}, 
+            {url: "https://upload.wikimedia.org/wikipedia/en/thumb/d/dd/The_Persistence_of_Memory.jpg/800px-The_Persistence_of_Memory.jpg", x: 0, z: -galleryDepth / 2, rotY: 0, wallName: "back", displayName: "The Persistence of Memory"}, 
+            {url: "https://upload.wikimedia.org/wikipedia/commons/thumb/e/ea/Van_Gogh_-_Starry_Night_-_Google_Art_Project.jpg/800px-Van_Gogh_-_Starry_Night_-_Google_Art_Project.jpg", x: galleryWidth / 2.8, z: -galleryDepth / 2, rotY: 0, wallName: "back", displayName: "Starry Night"}, 
+            {url: "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c5/Edvard_Munch%2C_1893%2C_The_Scream%2C_oil%2C_tempera_and_pastel_on_cardboard%2C_91_x_73_cm%2C_National_Gallery_of_Norway.jpg/800px-Edvard_Munch%2C_1893%2C_The_Scream%2C_oil%2C_tempera_and_pastel_on_cardboard%2C_91_x_73_cm%2C_National_Gallery_of_Norway.jpg", x: -galleryWidth / 2, z: -galleryDepth / 3, rotY: Math.PI / 2, wallName: "left", displayName: "The Scream"}, 
+            {url: "https://upload.wikimedia.org/wikipedia/commons/thumb/c/cc/Grant_Wood_-_American_Gothic_-_Google_Art_Project.jpg/800px-Grant_Wood_-_American_Gothic_-_Google_Art_Project.jpg", x: -galleryWidth / 2, z: 0, rotY: Math.PI / 2, wallName: "left", displayName: "American Gothic"}, 
+            {url: "https://upload.wikimedia.org/wikipedia/commons/thumb/4/40/The_Kiss_-_Gustav_Klimt_-_Google_Cultural_Institute.jpg/800px-The_Kiss_-_Gustav_Klimt_-_Google_Cultural_Institute.jpg", x: -galleryWidth / 2, z: galleryDepth / 3, rotY: Math.PI / 2, wallName: "left", displayName: "The Kiss"}, 
+            {url: "https://upload.wikimedia.org/wikipedia/commons/thumb/0/0f/1665_Girl_with_a_Pearl_Earring.jpg/800px-1665_Girl_with_a_Pearl_Earring.jpg", x: galleryWidth / 2, z: galleryDepth / 3, rotY: -Math.PI / 2, wallName: "right", displayName: "Girl with a Pearl Earring"}, 
+            {url: "https://upload.wikimedia.org/wikipedia/commons/thumb/1/1b/Whistlers_Mother_high_res.jpg/800px-Whistlers_Mother_high_res.jpg", x: galleryWidth / 2, z: 0, rotY: -Math.PI / 2, wallName: "right", displayName: "Whistler's Mother"}, 
+            {url: "https://upload.wikimedia.org/wikipedia/commons/thumb/3/31/Las_Meninas%2C_by_Diego_Vel%C3%A1zquez%2C_from_Prado_in_Google_Earth.jpg/800px-Las_Meninas%2C_by_Diego_Vel%C3%A1zquez%2C_from_Prado_in_Google_Earth.jpg", x: galleryWidth / 2, z: -galleryDepth / 3, rotY: -Math.PI / 2, wallName: "right", displayName: "Las Meninas"}, 
+        ];
+
+        const newRoomArtworksInfo = [
+            { url: "https://media.discordapp.net/attachments/1049072088465555549/1374528645795676230/IMG_3109.png?ex=682e610e&is=682d0f8e&hm=c279766cdabae66948a0fab6c86651ac3ce29ce5061dd954c698f27b2db310cc&=&format=webp&quality=lossless&width=553&height=800", wall: 'back', xOffsetPercent: 0, zOffsetPercent: 0, isPlaceholder: false, name: "NewRoomBack1", displayName: "The Clandestine Prayer", isGoldenFrame: true, initialRotY: Math.PI, customHeight: enlargedTargetArtworkHeight * 1.25 }, 
+            { url: "https://media.discordapp.net/attachments/1049072088465555549/1374528646227820564/IMG_3110.png?ex=682e610e&is=682d0f8e&hm=851e0f2a06e8016443416d602f2444c74591d4590f1eca56aef66ea824ebba5f&=&format=webp&quality=lossless&width=648&height=800", wall: 'left', xOffsetPercent: 0, zOffsetPercent: -0.35, isPlaceholder: false, name: "NewRoomLeft1", displayName: "If Only", initialRotY: Math.PI / 2 }, 
+            { url: "https://media.discordapp.net/attachments/1049072088465555549/1374528646638997534/IMG_3111.png?ex=682e610e&is=682d0f8e&hm=3a123f1589c7af916c27e7179d8b3cdf81cd7f98274b8ba1c264a3227739303d&=&format=webp&quality=lossless&width=649&height=800", wall: 'left', xOffsetPercent: 0, zOffsetPercent: 0.35, isPlaceholder: false, name: "NewRoomLeft2", displayName: "The in-between", initialRotY: Math.PI / 2 }, 
+            { url: "https://media.discordapp.net/attachments/1049072088465555549/1374528647108624474/IMG_3112.png?ex=682e610e&is=682d0f8e&hm=481099cdbd91d3d11741c8013615e6aa39cfe6f37153ae3f2fb594ac9c7f8ca1&=&format=webp&quality=lossless&width=804&height=800", wall: 'right', xOffsetPercent: 0, zOffsetPercent: -0.35, isPlaceholder: false, name: "NewRoomRight1", displayName: "Q 2:7", initialRotY: -Math.PI / 2 }, 
+            { url: "https://media.discordapp.net/attachments/1049072088465555549/1374528647704219700/IMG_3113.png?ex=682e610f&is=682d0f8f&hm=7301e4f86667e092da3e068e9942f01e81981e97e032463eaa30916bbf3f8627&=&format=webp&quality=lossless&width=809&height=800", wall: 'right', xOffsetPercent: 0, zOffsetPercent: 0.35, isPlaceholder: false, name: "NewRoomRight2", displayName: "Blue", initialRotY: -Math.PI / 2 }  
+        ];
+
+        // Function definitions moved before init() call
+        function onWindowResize() {
+            if (!camera || !renderer) return;
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function updateCameraMovement() {
+            if (!yawObject) return; 
+            velocityY += gravity;
+            let potentialY = yawObject.position.y + velocityY;
+            if (potentialY <= playerHeight) { potentialY = playerHeight; velocityY = 0; onGround = true; } 
+            else { onGround = false; }
+            yawObject.position.y = potentialY;
+            let currentEffectiveSpeed = keysPressed.shift ? moveSpeed * runSpeedMultiplier : moveSpeed; 
+            const originalXZPosition = new THREE.Vector3(yawObject.position.x, playerHeight, yawObject.position.z);
+            const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(yawObject.quaternion);
+            const right = new THREE.Vector3(1, 0, 0).applyQuaternion(yawObject.quaternion);
+            const intendedDisplacement = new THREE.Vector3();
+            if (keysPressed.w) intendedDisplacement.add(forward);
+            if (keysPressed.s) intendedDisplacement.sub(forward);
+            if (keysPressed.a) intendedDisplacement.sub(right);
+            if (keysPressed.d) intendedDisplacement.add(right);
+            if (intendedDisplacement.lengthSq() > 0) intendedDisplacement.normalize().multiplyScalar(currentEffectiveSpeed);
+            else return; 
+            const targetXZPosition = originalXZPosition.clone().add(intendedDisplacement);
+            const collisionCheckPosition = new THREE.Vector3(targetXZPosition.x, yawObject.position.y, targetXZPosition.z);
+            if (!checkCollision(collisionCheckPosition)) { 
+                yawObject.position.x = targetXZPosition.x;
+                yawObject.position.z = targetXZPosition.z;
+            } else {
+                const currentX = yawObject.position.x; const currentZ = yawObject.position.z;
+                const targetPositionX = new THREE.Vector3(currentX + intendedDisplacement.x, yawObject.position.y, currentZ);
+                if (!checkCollision(targetPositionX)) yawObject.position.x = targetPositionX.x;
+                const targetPositionZ = new THREE.Vector3(yawObject.position.x, yawObject.position.y, currentZ + intendedDisplacement.z);
+                if (!checkCollision(targetPositionZ)) yawObject.position.z = targetPositionZ.z;
+            }
+        }
+        
+        function toScreenPosition(object3D, camera, renderer) {
+            const vector = new THREE.Vector3();
+            object3D.getWorldPosition(vector);
+            vector.project(camera);
+            const x = (vector.x * 0.5 + 0.5) * renderer.domElement.clientWidth;
+            const y = (vector.y * -0.5 + 0.5) * renderer.domElement.clientHeight;
+            return { x: x, y: y };
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (yawObject) updateCameraMovement();
+
+            if (camera && artworkRaycaster && paintingTooltip && intersectablePaintingCanvases.length > 0) {
+                artworkRaycaster.setFromCamera({ x: 0, y: 0 }, camera); 
+                const intersects = artworkRaycaster.intersectObjects(intersectablePaintingCanvases, true); 
+
+                if (intersects.length > 0 && intersects[0].distance < 10) { 
+                    const intersectedObject = intersects[0].object;
+                    let artworkGroup = intersectedObject.parent; 
+                    
+                    while(artworkGroup && !artworkGroup.userData.displayName) {
+                        artworkGroup = artworkGroup.parent;
+                    }
+
+                    if (artworkGroup && artworkGroup.userData.displayName && artworkGroup.visible) {
+                        paintingTooltip.textContent = artworkGroup.userData.displayName;
+                        
+                        const artworkBoundingBox = new THREE.Box3().setFromObject(artworkGroup);
+                        const artworkCenter = new THREE.Vector3();
+                        artworkBoundingBox.getCenter(artworkCenter);
+                        
+                        const tooltipAnchor = new THREE.Object3D();
+                        tooltipAnchor.position.set(artworkCenter.x, artworkBoundingBox.max.y + 0.2, artworkCenter.z); 
+                        scene.add(tooltipAnchor); 
+                        
+                        const screenPos = toScreenPosition(tooltipAnchor, camera, renderer); 
+                        scene.remove(tooltipAnchor); 
+
+                        paintingTooltip.style.left = `${screenPos.x}px`;
+                        paintingTooltip.style.top = `${screenPos.y}px`;
+                        paintingTooltip.style.display = 'block';
+                    } else {
+                        paintingTooltip.style.display = 'none';
+                    }
+                } else {
+                    paintingTooltip.style.display = 'none';
+                }
+            }
+
+            if (renderer && scene && camera) renderer.render(scene, camera);
+        }
+
+
+        function init() {
+            const loaderElement = document.getElementById('loader');
+            loaderElement.style.display = 'block';
+            loaderElement.textContent = 'Loading Assets...';
+
+            let actualTexturesToLoadCount = mainGalleryArtworks.length + newRoomArtworksInfo.filter(art => !art.isPlaceholder).length;
+            let assetsToLoad = actualTexturesToLoadCount + 1 + 1; // Artworks + floor texture + Font 
+            let assetsLoaded = 0;
+
+            loadingManager = new THREE.LoadingManager();
+            
+            loadingManager.onStart = () => { 
+                assetsLoaded = 0; 
+                console.log(`Started loading. Expecting ${assetsToLoad} primary assets via manager.`);
+                loaderElement.textContent = `Loading Assets... (0/${assetsToLoad})`;
+            };
+            loadingManager.onLoad = () => { 
+                loaderElement.style.display = 'none';
+                console.log("All assets (managed by LoadingManager) finished loading.");
+            };
+            loadingManager.onProgress = (url, itemsLoaded, itemsTotal) => {
+                assetsLoaded = itemsLoaded; 
+                const totalForDisplay = Math.max(itemsTotal, assetsToLoad); 
+                console.log(`Loading asset (manager.onProgress): ${url}. Loaded ${assetsLoaded} of ${totalForDisplay}.`);
+                loaderElement.textContent = `Loading Assets... (${assetsLoaded}/${totalForDisplay})`;
+            };
+             loadingManager.onError = (url) => {
+                console.error(`Error loading asset (manager.onError): ${url}`);
+                loaderElement.textContent = `Error loading: ${url.substring(url.lastIndexOf('/') + 1)}`;
+            };
+
+            textureLoader = new THREE.TextureLoader(loadingManager);
+            textureLoader.setCrossOrigin('anonymous'); 
+
+            gltfLoader = new THREE.GLTFLoader(loadingManager); 
+            fontLoader = new THREE.FontLoader(loadingManager);
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x333333);
+            scene.fog = new THREE.Fog(0x333333, 15, (galleryDepth + newRoomDepth) * 1.5); 
+
+            yawObject = new THREE.Object3D();
+            yawObject.position.set(0, playerHeight, galleryDepth / 2 - 7); 
+            pitchObject = new THREE.Object3D();
+            yawObject.add(pitchObject); 
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 2000); 
+            pitchObject.add(camera); 
+            scene.add(yawObject); 
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+            document.getElementById('canvasContainer').appendChild(renderer.domElement);
+
+            paintingTooltip = document.getElementById('painting-tooltip');
+            artworkRaycaster = new THREE.Raycaster();
+
+            // --- Lighting ---
+            const hemiLight = new THREE.HemisphereLight(0xffffff, 0x888888, 0.7); 
+            hemiLight.position.set(0, galleryHeight, 0);
+            scene.add(hemiLight);
+            
+            const keyLight = new THREE.DirectionalLight(0xffffff, 0.5); 
+            keyLight.position.set(-15, 12, 10);
+            keyLight.castShadow = false; 
+            scene.add(keyLight);
+            
+            // --- Main Gallery Geometry ---
+            allWallMeshes = []; 
+            const floorTexture = textureLoader.load('https://threejs.org/examples/textures/hardwood2_diffuse.jpg'); 
+            floorTexture.wrapS = THREE.RepeatWrapping;
+            floorTexture.wrapT = THREE.RepeatWrapping;
+            floorTexture.repeat.set(galleryWidth / 5, galleryDepth / 5); 
+            const floorMaterial = new THREE.MeshStandardMaterial({ map: floorTexture, roughness: 0.8, metalness: 0.1 });
+            const floorGeo = new THREE.PlaneGeometry(galleryWidth, galleryDepth);
+            const mainFloor = new THREE.Mesh(floorGeo, floorMaterial);
+            mainFloor.rotation.x = -Math.PI / 2;
+            mainFloor.receiveShadow = true;
+            scene.add(mainFloor);
+
+            const ceilingMaterial = new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.9 });
+            const mainCeiling = new THREE.Mesh(new THREE.PlaneGeometry(galleryWidth, galleryDepth), ceilingMaterial);
+            mainCeiling.rotation.x = Math.PI / 2;
+            mainCeiling.position.y = galleryHeight;
+            scene.add(mainCeiling);
+
+            const wallMaterial = new THREE.MeshStandardMaterial({ color: 0xe8e8e8, roughness: 0.95, name: "StandardWallMaterial" }); 
+            const mainRoomBackWall = new THREE.Mesh(new THREE.PlaneGeometry(galleryWidth, galleryHeight), wallMaterial);
+            mainRoomBackWall.name = "MainGalleryBackWall";
+            mainRoomBackWall.position.set(0, galleryHeight / 2, -galleryDepth / 2); 
+            mainRoomBackWall.receiveShadow = true; scene.add(mainRoomBackWall); allWallMeshes.push(mainRoomBackWall);
+            
+            const mainRoomLeftWall = new THREE.Mesh(new THREE.PlaneGeometry(galleryDepth, galleryHeight), wallMaterial);
+            mainRoomLeftWall.name = "MainGalleryLeftWall";
+            mainRoomLeftWall.position.set(-galleryWidth / 2, galleryHeight / 2, 0); 
+            mainRoomLeftWall.rotation.y = Math.PI / 2;
+            mainRoomLeftWall.receiveShadow = true; scene.add(mainRoomLeftWall); allWallMeshes.push(mainRoomLeftWall);
+            
+            const mainRoomRightWall = new THREE.Mesh(new THREE.PlaneGeometry(galleryDepth, galleryHeight), wallMaterial);
+            mainRoomRightWall.name = "MainGalleryRightWall";
+            mainRoomRightWall.position.set(galleryWidth / 2, galleryHeight / 2, 0); 
+            mainRoomRightWall.rotation.y = -Math.PI / 2;
+            mainRoomRightWall.receiveShadow = true; scene.add(mainRoomRightWall); allWallMeshes.push(mainRoomRightWall);
+
+            const frontWallDoorwayXPosition = 0; 
+            const frontWallPartWidth = (galleryWidth - doorwayWidth) / 2; 
+            if (frontWallPartWidth > 0) {
+                const frontWallPart1Geo = new THREE.BoxGeometry(frontWallPartWidth, galleryHeight, wallThickness);
+                const frontWallPart1 = new THREE.Mesh(frontWallPart1Geo, wallMaterial);
+                frontWallPart1.name = "FrontWallLeftPart";
+                frontWallPart1.position.set(-(doorwayWidth/2 + frontWallPartWidth/2), galleryHeight / 2, galleryDepth / 2 );
+                frontWallPart1.receiveShadow = true; scene.add(frontWallPart1); allWallMeshes.push(frontWallPart1);
+                
+                const frontWallPart2Geo = new THREE.BoxGeometry(frontWallPartWidth, galleryHeight, wallThickness);
+                const frontWallPart2 = new THREE.Mesh(frontWallPart2Geo, wallMaterial);
+                frontWallPart2.name = "FrontWallRightPart";
+                frontWallPart2.position.set(doorwayWidth/2 + frontWallPartWidth/2, galleryHeight / 2, galleryDepth / 2);
+                frontWallPart2.receiveShadow = true; scene.add(frontWallPart2); allWallMeshes.push(frontWallPart2);
+            }
+            const lintelHeight = galleryHeight - doorwayHeight;
+            if (lintelHeight > 0) {
+                const lintelGeo = new THREE.BoxGeometry(doorwayWidth, lintelHeight, wallThickness);
+                const lintel = new THREE.Mesh(lintelGeo, wallMaterial);
+                lintel.name = "FrontWallLintel";
+                lintel.position.set(frontWallDoorwayXPosition, doorwayHeight + lintelHeight / 2, galleryDepth / 2);
+                lintel.receiveShadow = true; scene.add(lintel); allWallMeshes.push(lintel);
+            }
+             // --- Door Frame ---
+            const doorFrameMaterial = new THREE.MeshStandardMaterial({ color: 0x5C3A21, roughness: 0.7, metalness: 0.1, name: "DoorFrameMaterial" }); 
+            const frameInset = 0.01; // Small inset to avoid z-fighting
+
+            const doorFrameSideHeight = doorwayHeight - (2 * frameInset);
+            const doorFrameSideGeo = new THREE.BoxGeometry(doorFramePlankVisibleWidth, doorFrameSideHeight, doorFramePlankDepth); 
+            
+            const doorFrameTopWidth = doorwayWidth - (2 * frameInset) - (2 * doorFramePlankVisibleWidth);
+            const doorFrameTopGeo = new THREE.BoxGeometry(doorFrameTopWidth, doorFramePlankVisibleWidth, doorFramePlankDepth); 
+
+            const doorFrameLeft = new THREE.Mesh(doorFrameSideGeo, doorFrameMaterial);
+            doorFrameLeft.position.set(frontWallDoorwayXPosition - doorwayWidth / 2 + frameInset + doorFramePlankVisibleWidth / 2, doorFrameSideHeight / 2, galleryDepth / 2);
+            doorFrameLeft.name = "DoorFrameLeft";
+            scene.add(doorFrameLeft); allWallMeshes.push(doorFrameLeft);
+
+            const doorFrameRight = new THREE.Mesh(doorFrameSideGeo, doorFrameMaterial);
+            doorFrameRight.position.set(frontWallDoorwayXPosition + doorwayWidth / 2 - frameInset - doorFramePlankVisibleWidth / 2, doorFrameSideHeight / 2, galleryDepth / 2);
+            doorFrameRight.name = "DoorFrameRight";
+            scene.add(doorFrameRight); allWallMeshes.push(doorFrameRight);
+
+            const doorFrameTop = new THREE.Mesh(doorFrameTopGeo, doorFrameMaterial);
+            doorFrameTop.position.set(frontWallDoorwayXPosition, doorwayHeight - frameInset - doorFramePlankVisibleWidth / 2, galleryDepth / 2);
+            doorFrameTop.name = "DoorFrameTop";
+            scene.add(doorFrameTop); allWallMeshes.push(doorFrameTop);
+
+
+            // --- New Room Geometry ---
+            const newRoomCenterZ = (galleryDepth / 2) + (newRoomDepth / 2); 
+            const newRoomCenterX = frontWallDoorwayXPosition; 
+
+            const newRoomFloorGeo = new THREE.PlaneGeometry(newRoomWidth, newRoomDepth); 
+            const newRoomFloor = new THREE.Mesh(newRoomFloorGeo, floorMaterial); 
+            newRoomFloor.rotation.x = -Math.PI / 2;
+            newRoomFloor.position.set(newRoomCenterX, 0, newRoomCenterZ);
+            newRoomFloor.receiveShadow = true; scene.add(newRoomFloor);
+
+            const newRoomCeiling = new THREE.Mesh(newRoomFloorGeo, ceilingMaterial);
+            newRoomCeiling.rotation.x = Math.PI / 2;
+            newRoomCeiling.position.set(newRoomCenterX, galleryHeight, newRoomCenterZ);
+            scene.add(newRoomCeiling);
+
+            // New Room Far Wall with Thickness
+            const newRoomFarWallGeo = new THREE.BoxGeometry(newRoomWidth, galleryHeight, wallThickness);
+            newRoomFarWallMesh = new THREE.Mesh(newRoomFarWallGeo, wallMaterial); 
+            newRoomFarWallMesh.name = "NewRoomFarWall_Thick";
+            newRoomFarWallMesh.position.set(newRoomCenterX, galleryHeight / 2, newRoomCenterZ + newRoomDepth / 2 - wallThickness / 2); 
+            newRoomFarWallMesh.visible = true; 
+            newRoomFarWallMesh.receiveShadow = true; 
+            newRoomFarWallMesh.castShadow = true; 
+            scene.add(newRoomFarWallMesh); 
+            allWallMeshes.push(newRoomFarWallMesh);
+            newRoomFarWallMesh.updateMatrixWorld(true); 
+            const farWallWorldPos = new THREE.Vector3();
+            newRoomFarWallMesh.getWorldPosition(farWallWorldPos);
+            console.log(`New Room Far Wall ('${newRoomFarWallMesh.name}') created. UUID: ${newRoomFarWallMesh.uuid}, Visible: ${newRoomFarWallMesh.visible}, Material: ${newRoomFarWallMesh.material.name}, World Pos: (${farWallWorldPos.x.toFixed(2)}, ${farWallWorldPos.y.toFixed(2)}, ${farWallWorldPos.z.toFixed(2)})`);
+
+
+            newRoomSideWall1Mesh = new THREE.Mesh(new THREE.PlaneGeometry(newRoomDepth, galleryHeight), wallMaterial); 
+            newRoomSideWall1Mesh.name = "NewRoomLeftWall";
+            newRoomSideWall1Mesh.position.set(newRoomCenterX - newRoomWidth / 2, galleryHeight / 2, newRoomCenterZ); 
+            newRoomSideWall1Mesh.rotation.y = Math.PI / 2; 
+            newRoomSideWall1Mesh.receiveShadow = true; scene.add(newRoomSideWall1Mesh); allWallMeshes.push(newRoomSideWall1Mesh);
+
+            newRoomSideWall2Mesh = new THREE.Mesh(new THREE.PlaneGeometry(newRoomDepth, galleryHeight), wallMaterial); 
+            newRoomSideWall2Mesh.name = "NewRoomRightWall";
+            newRoomSideWall2Mesh.position.set(newRoomCenterX + newRoomWidth / 2, galleryHeight / 2, newRoomCenterZ); 
+            newRoomSideWall2Mesh.rotation.y = -Math.PI / 2; 
+            newRoomSideWall2Mesh.receiveShadow = true; scene.add(newRoomSideWall2Mesh); allWallMeshes.push(newRoomSideWall2Mesh);
+
+            // --- "Finest Art Section" Sign ---
+            fontLoader.load('https://threejs.org/examples/fonts/helvetiker_regular.typeface.json', function (font) {
+                const textContent = "Finest Art Section";
+                const textGeo = new THREE.TextGeometry(textContent, {
+                    font: font,
+                    size: 0.35, 
+                    height: 0.05, 
+                    curveSegments: 3, 
+                });
+                textGeo.computeBoundingBox(); 
+                const textWidth = textGeo.boundingBox.max.x - textGeo.boundingBox.min.x;
+                textGeo.translate(-textWidth / 2, 0, 0); 
+
+                const textMaterial = new THREE.MeshStandardMaterial({ color: 0xB08D57, roughness: 0.3, metalness: 0.6 }); 
+                const textMesh = new THREE.Mesh(textGeo, textMaterial);
+                textMesh.name = "FinestArtSign";
+                
+                textMesh.position.set(
+                    frontWallDoorwayXPosition, 
+                    galleryHeight - 0.9, 
+                    galleryDepth / 2 - wallThickness - 0.05 
+                );
+                textMesh.rotation.y = Math.PI; 
+                textMesh.castShadow = true;
+                textMesh.receiveShadow = true;
+                scene.add(textMesh);
+            });
+
+
+            // --- Artworks & Frames (Main Gallery) ---
+            const artYPosition = playerHeight + 0.2; 
+            const mainGalleryBackWallNormal = new THREE.Vector3(0, 0, 1); 
+            const mainGalleryLeftWallNormal = new THREE.Vector3(1, 0, 0);  
+            const mainGalleryRightWallNormal = new THREE.Vector3(-1, 0, 0); 
+            
+            mainGalleryArtworks.forEach(artData => { 
+                let wallNormal;
+                let initialX = artData.x; 
+                let initialZ = artData.z; 
+
+                if (artData.wallName === "back") {
+                    wallNormal = mainGalleryBackWallNormal;
+                    initialZ = mainRoomBackWall.position.z; 
+                } else if (artData.wallName === "left") {
+                    wallNormal = mainGalleryLeftWallNormal;
+                    initialX = mainRoomLeftWall.position.x; 
+                } else if (artData.wallName === "right") {
+                    wallNormal = mainGalleryRightWallNormal;
+                    initialX = mainRoomRightWall.position.x; 
+                }
+                let finalX = (artData.wallName === "back") ? artData.x : initialX;
+                let finalZ = (artData.wallName === "left" || artData.wallName === "right") ? artData.z : initialZ;
+
+                createArtwork(artData.url, finalX, artYPosition, finalZ, artData.rotY, wallNormal, false, false, false, artData.displayName);
+            });
+            
+            // --- New Room Artworks ---
+            const newRoomArtY = playerHeight + 0.1; 
+            const newRoomBackWallNormal = new THREE.Vector3(0, 0, -1);  
+            const newRoomLeftWallNormal = new THREE.Vector3(1, 0, 0);   
+            const newRoomRightWallNormal = new THREE.Vector3(-1, 0, 0);  
+
+            newRoomArtworksInfo.forEach((artInfo) => {
+                let posX, posZ, rotY, wallNormalVec;
+                let enableDetailedLoggingForThisArt = artInfo.name === "NewRoomLeft1" || artInfo.name === "NewRoomBack1"; 
+                
+                if (artInfo.wall === 'back') {
+                    posX = newRoomFarWallMesh.position.x + (artInfo.xOffsetPercent * newRoomWidth / 2); 
+                    posZ = newRoomFarWallMesh.position.z - (wallThickness / 2); 
+                    rotY = artInfo.initialRotY !== undefined ? artInfo.initialRotY : 0; 
+                    wallNormalVec = newRoomBackWallNormal;
+                } else if (artInfo.wall === 'left') {
+                    posX = newRoomSideWall1Mesh.position.x; 
+                    posZ = newRoomSideWall1Mesh.position.z + (artInfo.zOffsetPercent * newRoomDepth / 2); 
+                    rotY = artInfo.initialRotY !== undefined ? artInfo.initialRotY : Math.PI / 2;
+                    wallNormalVec = newRoomLeftWallNormal;
+                } else { // right
+                    posX = newRoomSideWall2Mesh.position.x; 
+                    posZ = newRoomSideWall2Mesh.position.z + (artInfo.zOffsetPercent * newRoomDepth / 2); 
+                    rotY = artInfo.initialRotY !== undefined ? artInfo.initialRotY : -Math.PI / 2;
+                    wallNormalVec = newRoomRightWallNormal;
+                }
+                
+                if (enableDetailedLoggingForThisArt) {
+                    console.log(`[${artInfo.name}] PRE-CREATE: Target Pos on Wall Surface (${posX.toFixed(2)}, ${newRoomArtY.toFixed(2)}, ${posZ.toFixed(2)}), RotY: ${rotY.toFixed(2)}, WallNormal: (${wallNormalVec.x},${wallNormalVec.y},${wallNormalVec.z})`);
+                }
+                createArtwork(artInfo.url, posX, newRoomArtY, posZ, rotY, wallNormalVec, artInfo.isPlaceholder, enableDetailedLoggingForThisArt, artInfo.isGoldenFrame, artInfo.displayName, artInfo.customHeight); 
+                                
+                let spotLightX = posX, spotLightZ = posZ; 
+                const spotlightLampY = galleryHeight - 0.3; 
+                const spotlightDistanceFactor = 1.5; 
+
+                if (artInfo.wall === 'back') spotLightZ -= spotlightDistanceFactor; 
+                else if (artInfo.wall === 'left') spotLightX += spotlightDistanceFactor; 
+                else if (artInfo.wall === 'right') spotLightX -= spotlightDistanceFactor; 
+                
+                createSpotlightWithLamp(spotLightX, spotlightLampY, spotLightZ, posX, newRoomArtY, posZ, false); 
+            });
+
+            // --- Central Pedestal & New Sphere Sculpture ---
+            const centralPedestalHeight = 1.0; 
+            const centralPedestalGeo = new THREE.BoxGeometry(1.2, centralPedestalHeight, 1.2);
+            const centralPedestalMat = new THREE.MeshStandardMaterial({color: 0x404040, roughness:0.7}); 
+            centralPedestal = new THREE.Mesh(centralPedestalGeo, centralPedestalMat); 
+            centralPedestal.position.set(0, centralPedestalHeight / 2, 0); 
+            centralPedestal.castShadow = true; 
+            centralPedestal.receiveShadow = true;
+            scene.add(centralPedestal); allWallMeshes.push(centralPedestal); 
+
+            const sphereRadius = 0.6;
+            const sphereGeo = new THREE.SphereGeometry(sphereRadius, 32, 32);
+            const sphereMat = new THREE.MeshStandardMaterial({
+                color: 0x4466ff, // Metallic blue
+                metalness: 0.8,
+                roughness: 0.2
+            });
+            const sphereMesh = new THREE.Mesh(sphereGeo, sphereMat);
+            sphereMesh.position.set(0, centralPedestalHeight + sphereRadius, 0);
+            sphereMesh.castShadow = true;
+            sphereMesh.receiveShadow = true;
+            sphereMesh.name = "CoolSphere";
+            scene.add(sphereMesh);
+
+            // Spotlight for the new sphere sculpture
+            createSpotlightWithLamp(
+                sphereMesh.position.x, 
+                galleryHeight - 0.3, 
+                sphereMesh.position.z + 0.7, // Offset spotlight source
+                sphereMesh.position.x, 
+                sphereMesh.position.y, // Target center of sphere
+                sphereMesh.position.z, 
+                true // isSculptureLight = true to cast shadow
+            );
+            
+            // --- Spotlights for Main Gallery Artworks ---
+            const lampFixtureY = galleryHeight - 0.3; 
+            const lightZOffsetBack = 2; 
+            const lightXOffsetSide = 0.7; 
+
+            mainGalleryArtworks.forEach(artData => { 
+                let spotLightX = artData.x; 
+                let spotLightZ = artData.z;
+                const targetX = artData.x; 
+                const targetY = artYPosition; 
+                const targetZ = artData.z;
+
+                if (artData.wallName === "back") {
+                    spotLightZ += lightZOffsetBack; 
+                } else if (artData.wallName === "left") {
+                    spotLightX += lightXOffsetSide; 
+                } else if (artData.wallName === "right") {
+                    spotLightX -= lightXOffsetSide; 
+                }
+                createSpotlightWithLamp(spotLightX, lampFixtureY, spotLightZ, targetX, targetY, targetZ, false);
+            });
+
+
+            setupCollidables();
+            setupInputControls();
+            window.addEventListener('resize', onWindowResize, false);
+            animate();
+        }
+
+        function createArtwork(imageUrl, x, y, z, rotationY = 0, wallNormal, isPlaceholder = false, enableDetailedLogging = false, isGoldenFrame = false, displayName = null, customTargetHeight = null) {
+            const artworkGroup = new THREE.Group();
+            allArtworkGroups.push(artworkGroup); 
+
+            let artName = displayName;
+            if (!artName) {
+                const artNameFromInfo = newRoomArtworksInfo.find(info => info.url === imageUrl && info.name); 
+                artName = artNameFromInfo ? artNameFromInfo.name : imageUrl.substring(imageUrl.lastIndexOf('/')+1).split('.')[0];
+                if (!artNameFromInfo) { 
+                     const mainArtInfo = mainGalleryArtworks.find(info => info.url === imageUrl);
+                     if(mainArtInfo && mainArtInfo.displayName) artName = mainArtInfo.displayName;
+                     else if(mainArtInfo) artName = mainArtInfo.url.substring(mainArtInfo.url.lastIndexOf('/')+1).split('.')[0];
+                }
+            }
+            artworkGroup.name = `ArtworkGroup_${artName || `Art-${artworkNameCounter++}`}`;
+            artworkGroup.userData.displayName = artName || `Artwork ${artworkNameCounter -1}`;
+            
+            const frameOuterDepth = 0.1 * paintingEnlargementFactor; 
+            const frameBorderWidth = 0.1 * paintingEnlargementFactor; 
+            const canvasDepth = 0.02 * paintingEnlargementFactor;   
+
+            const currentTargetHeight = customTargetHeight !== null ? customTargetHeight : enlargedTargetArtworkHeight;
+
+
+            const createFrameAndMount = (canvasWidth, canvasHeight) => {
+                const defaultFrameMaterial = new THREE.MeshStandardMaterial({ color: 0x3a2411, roughness: 0.8, metalness: 0.2, name: "DefaultFrameMaterial" });
+                const goldenFrameMaterial = new THREE.MeshStandardMaterial({ color: 0xFFD700, roughness: 0.4, metalness: 0.6, name: "GoldenFrameMaterial" });
+                const currentFrameMaterial = isGoldenFrame ? goldenFrameMaterial : defaultFrameMaterial;
+                
+                const frameBackMaterial = isGoldenFrame ? goldenFrameMaterial : new THREE.MeshStandardMaterial({ color: 0x2a1401, roughness: 0.9, name: "DarkBrownBackMaterial" });
+
+                const frameOuterWidth = canvasWidth + 2 * frameBorderWidth;
+                const frameOuterHeight = canvasHeight + 2 * frameBorderWidth;
+
+                const frameBackGeo = new THREE.BoxGeometry(frameOuterWidth, frameOuterHeight, canvasDepth); 
+                const frameBack = new THREE.Mesh(frameBackGeo, frameBackMaterial); 
+                frameBack.name = "FrameBack";
+                frameBack.position.z = -(frameOuterDepth - canvasDepth) / 2; 
+                artworkGroup.add(frameBack);
+                
+                const sideFrameGeo = new THREE.BoxGeometry(frameBorderWidth, frameOuterHeight, frameOuterDepth);
+                const topBotFrameGeo = new THREE.BoxGeometry(frameOuterWidth, frameBorderWidth, frameOuterDepth);
+
+                const frameLeft = new THREE.Mesh(sideFrameGeo, currentFrameMaterial);
+                frameLeft.name = "FrameLeft";
+                frameLeft.position.set(-(canvasWidth / 2) - (frameBorderWidth / 2), 0, 0);
+                artworkGroup.add(frameLeft);
+
+                const frameRight = new THREE.Mesh(sideFrameGeo, currentFrameMaterial);
+                frameRight.name = "FrameRight";
+                frameRight.position.set((canvasWidth / 2) + (frameBorderWidth / 2), 0, 0);
+                artworkGroup.add(frameRight);
+
+                const frameTop = new THREE.Mesh(topBotFrameGeo, currentFrameMaterial);
+                frameTop.name = "FrameTop";
+                frameTop.position.set(0, (canvasHeight / 2) + (frameBorderWidth / 2), 0);
+                artworkGroup.add(frameTop);
+
+                const frameBottom = new THREE.Mesh(topBotFrameGeo, currentFrameMaterial);
+                frameBottom.name = "FrameBottom";
+                frameBottom.position.set(0, -(canvasHeight / 2) - (frameBorderWidth / 2), 0);
+                artworkGroup.add(frameBottom);
+
+                artworkGroup.traverse(child => {
+                    if (child.isMesh) {
+                        child.castShadow = true; 
+                        child.receiveShadow = true;
+                    }
+                });
+
+                artworkGroup.position.set(x, y, z);
+                artworkGroup.rotation.y = rotationY; 
+                
+                if (enableDetailedLogging) {
+                    console.log(`[${artworkGroup.name}] Set initial group position to wall surface: (${x.toFixed(2)}, ${y.toFixed(2)}, ${z.toFixed(2)}), rotationY: ${rotationY.toFixed(2)}`);
+                    console.log(`[${artworkGroup.name}] Group position BEFORE offset:`, artworkGroup.position.clone());
+                }
+
+                if (wallNormal) {
+                    const offsetDistance = frameOuterDepth / 2;
+                    artworkGroup.position.addScaledVector(wallNormal.clone(), offsetDistance + 0.005); 
+                     if (enableDetailedLogging) {
+                        console.log(`[${artworkGroup.name}] Applied offset. Wall Normal (points into room): (${wallNormal.x.toFixed(1)},${wallNormal.y.toFixed(1)},${wallNormal.z.toFixed(1)}), OffsetDist (amount moved into room): ${offsetDistance.toFixed(3)}`);
+                        console.log(`[${artworkGroup.name}] Group position AFTER offset:`, artworkGroup.position.clone());
+                    }
+                } else { 
+                     artworkGroup.position.z += 0.15; 
+                     if (enableDetailedLogging) console.log(`[${artworkGroup.name}] Applied fallback Z offset (no wall normal).`);
+                }
+                scene.add(artworkGroup);
+                 if (enableDetailedLogging) {
+                    artworkGroup.updateMatrixWorld(true); 
+                    const worldPos = new THREE.Vector3();
+                    artworkGroup.getWorldPosition(worldPos);
+                    console.log(`[${artworkGroup.name}] Final World Position: (${worldPos.x.toFixed(2)}, ${worldPos.y.toFixed(2)}, ${worldPos.z.toFixed(2)})`);
+                 }
+            };
+
+            if (isPlaceholder) {
+                if(enableDetailedLogging) console.log(`[${artworkGroup.name}] Creating placeholder canvas.`);
+                const canvasHeight = currentTargetHeight; 
+                const canvasWidth = canvasHeight * (3/4); 
+
+                const canvasGeometry = new THREE.PlaneGeometry(canvasWidth, canvasHeight);
+                const canvasMaterial = new THREE.MeshStandardMaterial({
+                    color: 0x888888, roughness: 0.8, metalness: 0.1 
+                });
+                const canvasPlane = new THREE.Mesh(canvasGeometry, canvasMaterial);
+                canvasPlane.name = "PlaceholderCanvas";
+                canvasPlane.castShadow = false; 
+                canvasPlane.receiveShadow = true;
+                canvasPlane.position.z = frameOuterDepth / 2 - canvasDepth / 2 - 0.001; 
+                artworkGroup.add(canvasPlane);
+                intersectablePaintingCanvases.push(canvasPlane); 
+                createFrameAndMount(canvasWidth, canvasHeight);
+            } else {
+                textureLoader.load(imageUrl,
+                    (texture) => { 
+                        if(enableDetailedLogging || imageUrl.includes("discordapp.net")) console.log(`[${artworkGroup.name}] Successfully loaded texture:`, imageUrl); 
+                        const aspect = texture.image.naturalWidth / texture.image.naturalHeight;
+                        const canvasHeight = currentTargetHeight; 
+                        const canvasWidth = canvasHeight * aspect;
+
+                        const canvasGeometry = new THREE.PlaneGeometry(canvasWidth, canvasHeight);
+                        const canvasMaterial = new THREE.MeshStandardMaterial({
+                            map: texture, color: 0xffffff, roughness: 0.7, metalness: 0.1
+                        });
+                        const canvasPlane = new THREE.Mesh(canvasGeometry, canvasMaterial);
+                        canvasPlane.name = "ImageCanvas";
+                        canvasPlane.castShadow = false; 
+                        canvasPlane.receiveShadow = true;
+                        canvasPlane.position.z = frameOuterDepth / 2 - canvasDepth / 2 - 0.001; 
+                        artworkGroup.add(canvasPlane);
+                        intersectablePaintingCanvases.push(canvasPlane); 
+                        createFrameAndMount(canvasWidth, canvasHeight);
+                    },
+                    undefined, 
+                    (err) => { 
+                        console.error(`[${artworkGroup.name}] Failed to load artwork image: ${imageUrl}. Using placeholder.`, err);
+                        const canvasHeight = currentTargetHeight; 
+                        const canvasWidth = canvasHeight * (3/4); 
+                        const errorGeometry = new THREE.PlaneGeometry(canvasWidth, canvasHeight); 
+                        const errorMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000, name: `ErrorMaterial for ${imageUrl}` }); // Solid red for error
+                        const errorPlane = new THREE.Mesh(errorGeometry, errorMaterial);
+                        errorPlane.name = "ErrorCanvas";
+                        errorPlane.position.z = frameOuterDepth / 2 - canvasDepth / 2 - 0.001;
+                        artworkGroup.add(errorPlane);
+                        intersectablePaintingCanvases.push(errorPlane); 
+                        createFrameAndMount(canvasWidth, canvasHeight); 
+                    }
+                );
+            }
+            return artworkGroup; 
+        }
+
+        function createSpotlightWithLamp(x, y, z, targetX, targetY, targetZ, isSculptureLight = false) {
+            const spotLightIntensity = isSculptureLight ? 0.9 : 0.7; 
+            const spotLightAngle = isSculptureLight ? Math.PI / 4.5 : Math.PI / 7; 
+            const spotLight = new THREE.SpotLight(0xfff5e0, spotLightIntensity, 40, spotLightAngle , 0.3, 1.5); 
+            spotLight.position.set(x, y, z); 
+            spotLight.target.position.set(targetX, targetY, targetZ); 
+            spotLight.castShadow = isSculptureLight; 
+            if (spotLight.castShadow) { 
+                spotLight.shadow.mapSize.width = 512; 
+                spotLight.shadow.mapSize.height = 512;
+                spotLight.shadow.bias = -0.001; 
+                spotLight.shadow.camera.near = 0.5; 
+                spotLight.shadow.camera.far = 35;   
+            }
+            scene.add(spotLight);
+            scene.add(spotLight.target);
+            const lampGeo = new THREE.CylinderGeometry(0.08, 0.12, 0.3, 12); 
+            const lampMat = new THREE.MeshStandardMaterial({ color: 0x282828, roughness: 0.6, metalness: 0.4 });
+            const lampMesh = new THREE.Mesh(lampGeo, lampMat);
+            lampMesh.position.copy(spotLight.position); 
+            const direction = new THREE.Vector3().subVectors(spotLight.target.position, spotLight.position).normalize();
+            const defaultOrientation = new THREE.Vector3(0, 1, 0); 
+            if (Math.abs(direction.dot(defaultOrientation)) > 0.999) { 
+                if (direction.y < 0) lampMesh.quaternion.setFromAxisAngle(new THREE.Vector3(1,0,0), Math.PI);
+            } else {
+                lampMesh.quaternion.setFromUnitVectors(defaultOrientation, direction);
+            }
+            scene.add(lampMesh);
+            return spotLight;
+        }
+
+        function setupCollidables() {
+            collidableBoxes = []; 
+            allWallMeshes.forEach(wall => { 
+                if(wall) collidableBoxes.push(new THREE.Box3().setFromObject(wall));
+            });
+            if (centralPedestal && !allWallMeshes.includes(centralPedestal)) { 
+                 collidableBoxes.push(new THREE.Box3().setFromObject(centralPedestal));
+            }
+
+            allArtworkGroups.forEach(group => { 
+                if (group) {
+                    const artworkBox = new THREE.Box3().setFromObject(group);
+                    artworkBox.expandByScalar(0.1); 
+                    collidableBoxes.push(artworkBox);
+                }
+            });
+        }
+
+        function checkCollision(futurePosition) { 
+            if (!collisionsEnabled) return false; 
+
+            const playerCollider = new THREE.Box3();
+            playerCollider.setFromCenterAndSize(
+                new THREE.Vector3(futurePosition.x, yawObject.position.y - playerHeight / 2 + playerRadius, futurePosition.z), 
+                new THREE.Vector3(playerRadius * 2, playerHeight, playerRadius * 2) );
+            for (const box of collidableBoxes) {
+                if (playerCollider.intersectsBox(box)) return true; 
+            }
+            return false; 
+        }
+
+        function setupInputControls() {
+            document.addEventListener('keydown', (event) => {
+                const key = event.key.toLowerCase();
+                if (keysPressed.hasOwnProperty(key)) keysPressed[key] = true;
+                if (key === ' ' && onGround) { velocityY = jumpStrength; onGround = false;}
+                if (key === 'h') {
+                    allWallMeshes.forEach(wall => {
+                        if (wall) wall.visible = !wall.visible;
+                    });
+                     console.log("Wall visibility toggled. NewRoomFarWall visible:", newRoomFarWallMesh ? newRoomFarWallMesh.visible : "N/A");
+                }
+                if (key === 'f') { 
+                    allArtworkGroups.forEach(group => {
+                        if (group) group.visible = !group.visible;
+                    });
+                    console.log("Artwork frames visibility toggled.");
+                }
+                if (key === 'g') { 
+                    collisionsEnabled = !collisionsEnabled;
+                    console.log("Collisions Enabled:", collisionsEnabled);
+                }
+            });
+            document.addEventListener('keyup', (event) => {
+                const key = event.key.toLowerCase();
+                if (keysPressed.hasOwnProperty(key)) keysPressed[key] = false;
+                if (event.key === "Escape") document.exitPointerLock();
+            });
+            const canvas = renderer.domElement;
+            canvas.addEventListener('click', () => { if (!isPointerLocked) canvas.requestPointerLock(); });
+            document.addEventListener('pointerlockchange', () => {
+                isPointerLocked = document.pointerLockElement === canvas;
+                document.getElementById('instructions').style.display = isPointerLocked ? 'none' : 'block';
+                document.body.style.cursor = isPointerLocked ? 'none' : 'grab';
+            }, false);
+            document.addEventListener('mousemove', (event) => {
+                if (isPointerLocked) {
+                    let deltaX = event.movementX || 0; 
+                    let deltaY = event.movementY || 0; 
+                    const maxDelta = 100; 
+                    deltaX = Math.max(-maxDelta, Math.min(maxDelta, deltaX));
+                    deltaY = Math.max(-maxDelta, Math.min(maxDelta, deltaY));
+
+                    yawObject.rotation.y -= deltaX * lookSpeed;
+                    pitchObject.rotation.x -= deltaY * lookSpeed;
+                    pitchObject.rotation.x = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, pitchObject.rotation.x));
+                }
+            }, false);
+        }
+        
+        init(); // Call init at the end
+    </script>
+</body>
+</html>
